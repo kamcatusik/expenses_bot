@@ -8,6 +8,7 @@ import (
 	"expense-tracker/bot/internal/telegram"
 	"log"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -16,6 +17,7 @@ type Bot struct {
 	api     *apiclient.Client
 	agent   *agent.Agent
 	allowed map[int64]bool // пусто = пускать всех
+	wg      sync.WaitGroup
 }
 
 func NewBot(tg *telegram.Client, api *apiclient.Client, ag *agent.Agent, allowed map[int64]bool) *Bot {
@@ -42,7 +44,30 @@ func (b *Bot) Run(ctx context.Context) {
 			if m == nil || m.From == nil || strings.TrimSpace(m.Text) == "" {
 				continue
 			}
-			go b.handle(ctx, m)
+			b.wg.Add(1)
+			go func(msg *telegram.Message) {
+				defer b.wg.Done()
+				// Используем context.Background(), чтобы при отмене контекста polling'а
+				// уже запущенная обработка сообщения успела корректно завершиться
+				b.handle(context.Background(), msg)
+			}(m)
 		}
+	}
+
+	log.Println("bot stopping: waiting for in-flight requests...")
+	done := make(chan struct{})
+	go func() {
+		b.wg.Wait()
+		close(done)
+	}()
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	select {
+	case <-done:
+		log.Println("bot stopped gracefully")
+	case <-shutdownCtx.Done():
+		log.Println("bot shutdown timed out: forced exit")
 	}
 }

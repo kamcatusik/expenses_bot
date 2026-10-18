@@ -131,9 +131,10 @@ func (c *Client) chatOnce(ctx context.Context, msgs []Message, tools []Tool) (Me
 	m.Role = "assistant"
 	return m, nil
 }
-func truncate(s string, n int) string {
-	if len(s) > n {
-		return s[:n] + "..."
+func truncate(s string, maxRunes int) string {
+	r := []rune(s)
+	if len(r) > maxRunes {
+		return string(r[:maxRunes]) + "..."
 	}
 	return s
 }
