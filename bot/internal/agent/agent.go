@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"strings"
 	"sync"
@@ -109,9 +110,14 @@ func (a *Agent) Handle(ctx context.Context, userID int64, text string) (string, 
 func (a *Agent) execTool(ctx context.Context, userID int64, name, args string) string {
 	out, err := a.dispatch(ctx, userID, name, args)
 	if err != nil {
+		log.Printf("инструмент %s завершился ошибкой (user %d): %v", name, userID, err)
 		out = map[string]any{"error": err.Error()}
 	}
-	b, _ := json.Marshal(out)
+	b, err := json.Marshal(out)
+	if err != nil {
+		log.Printf("инструмент %s: не удалось сериализовать результат (user %d): %v", name, userID, err)
+		return `{"error":"internal serialization error"}`
+	}
 	return string(b)
 }
 

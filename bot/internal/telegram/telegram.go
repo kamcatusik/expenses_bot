@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -65,7 +67,11 @@ func (c *Client) call(ctx context.Context, method string, payload, out any) erro
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return err
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err // у *url.Error в тексте полный URL, а в нём токен
+		}
+		return fmt.Errorf("telegram %s: %w", method, err)
 	}
 	defer resp.Body.Close()
 

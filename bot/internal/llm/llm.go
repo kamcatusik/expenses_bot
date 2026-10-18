@@ -5,11 +5,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"time"
 )
+
+const maxAttempts = 3
 
 type Client struct {
 	http    *http.Client
@@ -18,6 +21,18 @@ type Client struct {
 	model   string
 }
 
+// ErrLLM помечает любую ошибку, источник которой — сама нейросеть/её API
+// (сеть, таймаут, статус, битый ответ). Проверяется через errors.Is.
+var ErrLLM = errors.New("проблема с LLM")
+
+type StatusError struct {
+	Code int
+	Body string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("status %d: %s", e.Code, truncate(e.Body, 500))
+}
 func NewClient(baseURL, apiKey, model string) *Client {
 	return &Client{baseURL: baseURL, apiKey: apiKey, model: model, http: &http.Client{Timeout: 60 * time.Second}}
 }
@@ -52,6 +67,28 @@ type Tool struct {
 }
 
 func (c *Client) Chat(ctx context.Context, msgs []Message, tools []Tool) (Message, error) {
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-time.After(time.Duration(attempt) * 2 * time.Second):
+			case <-ctx.Done():
+				return Message{}, fmt.Errorf("%w: %w", ErrLLM, ctx.Err())
+			}
+		}
+		m, err := c.chatOnce(ctx, msgs, tools)
+		if err == nil {
+			return m, nil
+		}
+		lastErr = err
+		var se *StatusError
+		if !errors.As(err, &se) || (se.Code != 429 && se.Code < 500) {
+			break // повторять имеет смысл только при перегрузке и сбоях сервера
+		}
+	}
+	return Message{}, fmt.Errorf("%w: %w", ErrLLM, lastErr)
+}
+func (c *Client) chatOnce(ctx context.Context, msgs []Message, tools []Tool) (Message, error) {
 	body, err := json.Marshal(map[string]any{
 		"model":       c.model,
 		"messages":    msgs,
@@ -76,7 +113,7 @@ func (c *Client) Chat(ctx context.Context, msgs []Message, tools []Tool) (Messag
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
-		return Message{}, fmt.Errorf("llm: status %d: %s", resp.StatusCode, truncate(string(raw), 500))
+		return Message{}, &StatusError{Code: resp.StatusCode, Body: string(raw)}
 	}
 
 	var out struct {
@@ -85,16 +122,15 @@ func (c *Client) Chat(ctx context.Context, msgs []Message, tools []Tool) (Messag
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return Message{}, fmt.Errorf("llm: bad response: %w", err)
+		return Message{}, fmt.Errorf("bad response: %w", err)
 	}
 	if len(out.Choices) == 0 {
-		return Message{}, fmt.Errorf("llm: empty choices")
+		return Message{}, errors.New("empty choices")
 	}
 	m := out.Choices[0].Message
 	m.Role = "assistant"
 	return m, nil
 }
-
 func truncate(s string, n int) string {
 	if len(s) > n {
 		return s[:n] + "..."

@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE TABLE IF NOT EXISTS expenses (
     id         BIGSERIAL PRIMARY KEY,
-    user_id    BIGINT NOT NULL,              -- Telegram ID владельца
+    user_id    BIGINT NOT NULL REFERENCES users(id), -- Telegram ID владельца
     amount     NUMERIC(12,2) NOT NULL CHECK (amount > 0),
     category   TEXT NOT NULL CHECK (category IN
                ('еда','транспорт','жильё','развлечения','здоровье','покупки','другое')),
@@ -16,5 +16,4 @@ CREATE TABLE IF NOT EXISTS expenses (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_expenses_user_date ON expenses (user_id, spent_at DESC);
-CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses (spent_at DESC);
+
