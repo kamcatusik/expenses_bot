@@ -28,6 +28,7 @@ func NewBot(tg *telegram.Client, api *apiclient.Client, ag *agent.Agent, allowed
 func (b *Bot) Run(ctx context.Context) {
 	health.Beat() // сразу при старте, чтобы healthcheck не ждал первого опроса
 	offset := 0
+	sem := make(chan struct{}, 10) // ограничиваем одновременную обработку до 10 сообщений
 	for ctx.Err() == nil {
 		updates, err := b.tg.GetUpdates(ctx, offset)
 		if err != nil {
@@ -44,9 +45,19 @@ func (b *Bot) Run(ctx context.Context) {
 			if m == nil || m.From == nil || strings.TrimSpace(m.Text) == "" {
 				continue
 			}
+
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				break
+			}
+
 			b.wg.Add(1)
 			go func(msg *telegram.Message) {
-				defer b.wg.Done()
+				defer func() {
+					<-sem
+					b.wg.Done()
+				}()
 				// Используем context.Background(), чтобы при отмене контекста polling'а
 				// уже запущенная обработка сообщения успела корректно завершиться
 				b.handle(context.Background(), msg)

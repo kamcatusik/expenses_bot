@@ -2,23 +2,18 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"errors"
-	"io/fs"
 	"log"
 	"net/http"
 	"os/signal"
-	"sort"
 	"syscall"
 	"time"
 	_ "time/tzdata"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
-
 	"expense-tracker/backend/internal/config"
+	"expense-tracker/backend/internal/database"
 	"expense-tracker/backend/internal/repository"
 	apihttp "expense-tracker/backend/internal/transport/http"
-	"expense-tracker/backend/migrations"
 )
 
 func main() {
@@ -29,14 +24,17 @@ func main() {
 		log.Fatalf("bad TZ %q: %v", cfg.TZ, err)
 	}
 
-	db, err := sql.Open("pgx", cfg.DatabaseURL)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	dbCfg := database.DefaultConfig(cfg.DatabaseURL)
+	db, err := database.Open(ctx, dbCfg)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("database init: %v", err)
 	}
 	defer db.Close()
 
-	waitForDB(db)
-	if err := migrate(db); err != nil {
+	if err := database.Migrate(ctx, db); err != nil {
 		log.Fatalf("migrate: %v", err)
 	}
 
@@ -45,9 +43,6 @@ func main() {
 		Handler:           apihttp.NewRouter(repository.NewExpenses(db), repository.NewUsers(db), loc),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -70,35 +65,4 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("shutdown: %v", err)
 	}
-}
-
-func waitForDB(db *sql.DB) {
-	for i := 0; i < 30; i++ {
-		if err := db.Ping(); err == nil {
-			return
-		}
-		log.Println("waiting for database...")
-		time.Sleep(time.Second)
-	}
-	log.Fatal("database is unavailable")
-}
-
-// migrate применяет *.sql по порядку имён. Файлы написаны идемпотентно (IF NOT EXISTS).
-func migrate(db *sql.DB) error {
-	files, err := fs.Glob(migrations.FS, "*.sql")
-	if err != nil {
-		return err
-	}
-	sort.Strings(files)
-	for _, f := range files {
-		body, err := migrations.FS.ReadFile(f)
-		if err != nil {
-			return err
-		}
-		if _, err := db.Exec(string(body)); err != nil {
-			return err
-		}
-		log.Printf("applied migration %s", f)
-	}
-	return nil
 }
