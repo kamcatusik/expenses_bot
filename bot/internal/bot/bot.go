@@ -29,6 +29,7 @@ func (b *Bot) Run(ctx context.Context) {
 	health.Beat() // сразу при старте, чтобы healthcheck не ждал первого опроса
 	offset := 0
 	sem := make(chan struct{}, 10) // ограничиваем одновременную обработку до 10 сообщений
+polling:
 	for ctx.Err() == nil {
 		updates, err := b.tg.GetUpdates(ctx, offset)
 		if err != nil {
@@ -49,7 +50,7 @@ func (b *Bot) Run(ctx context.Context) {
 			select {
 			case sem <- struct{}{}:
 			case <-ctx.Done():
-				break
+				break polling
 			}
 
 			b.wg.Add(1)
